@@ -1,0 +1,5 @@
+# Nothing is needed to *run* this Lambda beyond the standard library and
+# boto3 (preinstalled in the Lambda runtime) -- see handler.py/email_parser.py
+# /fastapi_client.py. These are test-only dependencies.
+pytest==8.3.3
+moto[s3]==5.0.14

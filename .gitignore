@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Env
+.env
+.env.local
+
+# Local-storage backend for uploaded knowledge-base files (Phase 7,
+# app/rag/storage.py's LocalFileStorage) -- never committed, same as any
+# other local runtime data.
+backend/storage/
+
+# CDK
+cdk.out/
+cdk.context.json
+
+# Internal phase-by-phase build instructions used to develop this
+# project -- not meant to be published alongside the resulting code.
+claudeprompt/
+
+# Claude Code's own local session/tooling state -- not project content.
+.claude/
+
+# TypeScript incremental build cache.
+frontend/tsconfig.tsbuildinfo
+
+# OS
+.DS_Store

@@ -1,0 +1,11 @@
+# Never let a locally-populated .env (real DATABASE_URL, real AWS
+# credentials if ever set there) end up baked into an image that gets
+# pushed to a registry -- the deployed container gets its config from
+# ECS environment variables/secrets (compute_stack.py), not this file.
+.env
+.venv/
+__pycache__/
+*.pyc
+storage/
+.pytest_cache/
+tests/

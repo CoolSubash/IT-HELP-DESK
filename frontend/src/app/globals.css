@@ -1,0 +1,840 @@
+/* Design tokens + a small set of reusable classes -- the "design system"
+   for this dashboard. Plain CSS rather than a framework (Tailwind, etc.)
+   so there's nothing new to install; every class used anywhere in the app
+   is defined once, here.
+
+   Responsive strategy: one breakpoint (860px) switches the sidebar from a
+   permanent column to an off-canvas drawer (state lives in
+   components/layout/AppShell.tsx); everything else (stat cards, filters,
+   the ticket-detail two-column layout, the detail-list key/value grid)
+   uses CSS Grid/Flexbox's own wrapping (`auto-fit`, `flex-wrap`) so it
+   reflows continuously rather than jumping between a few fixed layouts.
+   `.page`'s `max-width` + `margin: 0 auto` keeps content from stretching
+   into unreadably wide lines on a large monitor.
+
+   Theme: `data-theme="light"|"dark"` on <html> (set by
+   lib/ThemeContext.tsx, defaulting to the OS preference the first time --
+   see THEME_INIT_SCRIPT in that file, injected in app/layout.tsx's <head>
+   so the right theme is already active before the first paint). Every
+   color used anywhere below is a variable so a single override block can
+   re-theme the whole app, badges and message bubbles included -- nothing
+   hard-codes a light-only hex value outside these two blocks. */
+
+:root {
+  --color-bg: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-border: #e2e4e9;
+  --color-text: #1a1d24;
+  --color-text-muted: #6b7280;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fee2e2;
+  --color-success: #16a34a;
+  --color-success-bg: #dcfce7;
+  --sidebar-width: 240px;
+  --topbar-height: 60px;
+  --radius: 8px;
+  /* var(--font-poppins) is set on <html> by next/font in app/layout.tsx;
+     the rest is a plain fallback stack if that variable is ever missing. */
+  --font-sans: var(--font-poppins), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+
+  /* Badge / message-bubble tints -- broken out as their own variables so
+     the dark-mode block can swap them for deeper, less blown-out versions
+     instead of pasting the same light pastel over a dark page. */
+  --tint-gray-bg: #e5e7eb;
+  --tint-gray-fg: #374151;
+  --tint-blue-bg: #dbeafe;
+  --tint-blue-fg: #1d4ed8;
+  --tint-amber-bg: #fef3c7;
+  --tint-amber-fg: #92400e;
+  --tint-orange-bg: #ffedd5;
+  --tint-orange-fg: #9a3412;
+  --tint-indigo-bg: #e0e7ff;
+  --tint-indigo-fg: #3730a3;
+  --tint-red-bg: var(--color-danger-bg);
+  --tint-red-fg: #991b1b;
+  --tint-green-bg: var(--color-success-bg);
+  --tint-green-fg: #166534;
+
+  --bubble-student-bg: #f9fafb;
+  --bubble-ai-bg: #eff6ff;
+  --bubble-ai-border: #bfdbfe;
+  --bubble-admin-bg: #ecfdf5;
+  --bubble-admin-border: #a7f3d0;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #0e1117;
+  --color-surface: #161a22;
+  --color-border: #2b303b;
+  --color-text: #e5e7eb;
+  --color-text-muted: #9aa1ac;
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-danger: #f87171;
+  --color-danger-bg: #3f1d1d;
+  --color-success: #4ade80;
+  --color-success-bg: #143823;
+
+  --tint-gray-bg: #2a2f3a;
+  --tint-gray-fg: #d1d5db;
+  --tint-blue-bg: #1e3a5f;
+  --tint-blue-fg: #93c5fd;
+  --tint-amber-bg: #453411;
+  --tint-amber-fg: #fcd34d;
+  --tint-orange-bg: #4a2c12;
+  --tint-orange-fg: #fdba74;
+  --tint-indigo-bg: #2e2a5c;
+  --tint-indigo-fg: #a5b4fc;
+  --tint-red-bg: var(--color-danger-bg);
+  --tint-red-fg: #fca5a5;
+  --tint-green-bg: var(--color-success-bg);
+  --tint-green-fg: #86efac;
+
+  --bubble-student-bg: #1c2029;
+  --bubble-ai-bg: #142235;
+  --bubble-ai-border: #1e3a5f;
+  --bubble-admin-bg: #10261b;
+  --bubble-admin-border: #1f4d38;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  /* Belt-and-suspenders: every scrollable element below (tables, the
+     sidebar drawer) manages its own overflow, so the page itself should
+     never need to scroll sideways. */
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+select,
+input,
+textarea {
+  font-family: inherit;
+}
+
+/* ---------- App shell ---------- */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: #111827;
+  color: #d1d5db;
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px 20px;
+  border-bottom: 1px solid #1f2937;
+  margin-bottom: 12px;
+}
+
+.sidebar__logo {
+  font-weight: 700;
+  font-size: 16px;
+  color: #fff;
+}
+
+.sidebar__close {
+  display: none;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar__link {
+  padding: 12px 20px;
+  font-size: 14px;
+  color: #d1d5db;
+  border-left: 3px solid transparent;
+}
+
+.sidebar__link:hover {
+  background: #1f2937;
+  color: #fff;
+}
+
+.sidebar__link--active {
+  background: #1f2937;
+  color: #fff;
+  border-left-color: var(--color-primary);
+  font-weight: 600;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  min-height: var(--topbar-height);
+  flex-shrink: 0;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 24px;
+}
+
+.topbar__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.topbar__title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.topbar__acting-as {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+}
+
+.menu-toggle,
+.theme-toggle {
+  display: none;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle:hover {
+  background: var(--color-bg);
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+/* ----- Mobile: sidebar becomes an off-canvas drawer ----- */
+@media (max-width: 860px) {
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease-out;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.2);
+  }
+
+  .sidebar--open {
+    transform: translateX(0);
+  }
+
+  .sidebar__close {
+    display: block;
+  }
+
+  .menu-toggle {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 17, 21, 0.5);
+    z-index: 30;
+  }
+}
+
+.page {
+  padding: 24px;
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+@media (max-width: 560px) {
+  .page {
+    padding: 16px;
+  }
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.page-subtitle {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+/* ---------- Cards / panels ---------- */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  min-width: 0;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  min-width: 0;
+}
+
+.stat-card__label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+}
+
+.stat-card__value {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+/* ---------- Tables ---------- */
+/* Tables reflow poorly at any width, so instead of trying to make one
+   fit every screen, they scroll horizontally inside their own container
+   -- the page itself never needs to. */
+
+.table-wrap {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+table.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+
+.table th {
+  text-align: left;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.table tr.table__row--clickable {
+  cursor: pointer;
+}
+
+.table tr.table__row--clickable:hover {
+  background: var(--color-bg);
+}
+
+/* ---------- Badges ---------- */
+
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge[data-status="NEW"] {
+  background: var(--tint-gray-bg);
+  color: var(--tint-gray-fg);
+}
+.badge[data-status="AI_INVESTIGATING"] {
+  background: var(--tint-blue-bg);
+  color: var(--tint-blue-fg);
+}
+.badge[data-status="WAITING_FOR_USER"] {
+  background: var(--tint-amber-bg);
+  color: var(--tint-amber-fg);
+}
+.badge[data-status="WAITING_FOR_ADMIN"] {
+  background: var(--tint-orange-bg);
+  color: var(--tint-orange-fg);
+}
+.badge[data-status="IN_PROGRESS"] {
+  background: var(--tint-indigo-bg);
+  color: var(--tint-indigo-fg);
+}
+.badge[data-status="RESOLVED"] {
+  background: var(--tint-green-bg);
+  color: var(--tint-green-fg);
+}
+.badge[data-status="ESCALATED"] {
+  background: var(--tint-red-bg);
+  color: var(--tint-red-fg);
+}
+.badge[data-status="CLOSED"] {
+  background: var(--tint-gray-bg);
+  color: var(--color-text-muted);
+}
+
+.badge[data-priority="LOW"] {
+  background: var(--tint-gray-bg);
+  color: var(--tint-gray-fg);
+}
+.badge[data-priority="MEDIUM"] {
+  background: var(--tint-blue-bg);
+  color: var(--tint-blue-fg);
+}
+.badge[data-priority="HIGH"] {
+  background: var(--tint-orange-bg);
+  color: var(--tint-orange-fg);
+}
+.badge[data-priority="URGENT"] {
+  background: var(--tint-red-bg);
+  color: var(--tint-red-fg);
+}
+
+/* ---------- Forms / controls ---------- */
+
+.control {
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  max-width: 100%;
+}
+
+.filters-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+/* Flex items default to a min-width based on their content, which is how
+   a fixed-width input/select ends up forcing the whole bar (and the page)
+   to scroll sideways on a narrow screen. This lets them actually shrink. */
+.filters-bar > * {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.search-input {
+  flex: 2 1 220px;
+}
+
+.btn {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--color-bg);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+/* ---------- States ---------- */
+
+.state-block {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.state-block--error {
+  color: var(--color-danger);
+}
+
+/* ---------- Ticket detail layout ---------- */
+
+.ticket-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .ticket-detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  row-gap: 10px;
+  column-gap: 12px;
+  font-size: 13px;
+}
+
+.detail-list dt {
+  color: var(--color-text-muted);
+}
+
+.detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A 120px label column next to a value is fine down to a point, but on a
+   phone-width screen it squeezes the value into an unreadably narrow
+   strip -- stack label-above-value instead. */
+@media (max-width: 420px) {
+  .detail-list {
+    grid-template-columns: 1fr;
+    row-gap: 4px;
+  }
+
+  .detail-list dt {
+    margin-top: 8px;
+    font-weight: 600;
+  }
+
+  .detail-list dt:first-child {
+    margin-top: 0;
+  }
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 12px;
+}
+
+/* ---------- Conversation ---------- */
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.message-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .message-bubble {
+    max-width: 100%;
+  }
+}
+
+.message-bubble__meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.message-bubble__sender-tag {
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.message-bubble[data-sender="STUDENT"] {
+  align-self: flex-start;
+  background: var(--bubble-student-bg);
+}
+.message-bubble[data-sender="STUDENT"] .message-bubble__sender-tag {
+  background: var(--tint-gray-bg);
+  color: var(--tint-gray-fg);
+}
+
+.message-bubble[data-sender="AI"] {
+  align-self: flex-start;
+  background: var(--bubble-ai-bg);
+  border-color: var(--bubble-ai-border);
+}
+.message-bubble[data-sender="AI"] .message-bubble__sender-tag {
+  background: var(--tint-blue-bg);
+  color: var(--tint-blue-fg);
+}
+
+.message-bubble[data-sender="ADMIN"] {
+  align-self: flex-end;
+  background: var(--bubble-admin-bg);
+  border-color: var(--bubble-admin-border);
+}
+.message-bubble[data-sender="ADMIN"] .message-bubble__sender-tag {
+  background: var(--tint-green-bg);
+  color: var(--tint-green-fg);
+}
+
+.reply-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reply-box textarea {
+  font-size: 13px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  resize: vertical;
+  min-height: 80px;
+  width: 100%;
+}
+
+/* ---------- Timeline (history) ---------- */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.timeline__item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+
+.timeline__item:last-child {
+  border-bottom: none;
+}
+
+.timeline__time {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  min-width: 130px;
+}
+
+.timeline__body {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.timeline__actor {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.placeholder-page {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+/* ---------- Knowledge base (Phase 7) ---------- */
+
+.badge[data-doc-status="PROCESSING"] {
+  background: var(--tint-blue-bg);
+  color: var(--tint-blue-fg);
+}
+.badge[data-doc-status="READY"] {
+  background: var(--tint-green-bg);
+  color: var(--tint-green-fg);
+}
+.badge[data-doc-status="FAILED"] {
+  background: var(--tint-red-bg);
+  color: var(--tint-red-fg);
+}
+.badge[data-doc-status="ARCHIVED"] {
+  background: var(--tint-gray-bg);
+  color: var(--color-text-muted);
+}
+
+.upload-panel {
+  margin-bottom: 16px;
+}
+
+.upload-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.upload-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.upload-form__field label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.upload-form__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.upload-form__status {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.upload-form__version-notice {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--tint-amber-bg);
+  color: var(--tint-amber-fg);
+}
+
+.doc-error-message {
+  font-size: 12px;
+  color: var(--color-danger);
+  margin-top: 2px;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,28 @@
+# Local development environment. Brings up Postgres so the backend
+# (run on your host machine, not in a container -- see root README) has
+# something to connect to.
+#
+# We use the pgvector image (not plain `postgres`) even though Phase 1
+# doesn't use vector columns yet: RAG (a later phase, project.md #6) will
+# need the `vector` extension, and pinning the image now avoids swapping
+# the base image -- and therefore any data volume compatibility questions
+# -- later.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+      POSTGRES_DB: helpdesk
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helpdesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
