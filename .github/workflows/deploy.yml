@@ -86,12 +86,20 @@ jobs:
           # browser uploads to the knowledge-base bucket start working.
           # See deploy-backend's identical lookup below for why a
           # literal "None" (not just an empty/missing result) has to be
-          # checked for explicitly here too.
+          # checked for explicitly here too, why this is NOT prefixed
+          # with an extra "http://" (frontend_stack.py's FrontendUrl
+          # output already includes the scheme), and why it's
+          # lowercased (a real browser's Origin header lowercases the
+          # host, but the ALB's own DNS name -- e.g.
+          # "ItHelp-Front-zE68nTrDX2ve-...\" -- is mixed-case; a
+          # same-case comparison here would never match a real request,
+          # verified against a live 400 "Disallowed CORS origin").
           FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskFrontendStack \
             --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text 2>/dev/null || echo "")
           if [ "$FRONTEND_URL" = "None" ]; then FRONTEND_URL=""; fi
+          FRONTEND_URL=$(echo "$FRONTEND_URL" | tr '[:upper:]' '[:lower:]')
           ORIGINS_ARG=""
-          if [ -n "$FRONTEND_URL" ]; then ORIGINS_ARG="-c dashboard_origins=http://$FRONTEND_URL"; fi
+          if [ -n "$FRONTEND_URL" ]; then ORIGINS_ARG="-c dashboard_origins=$FRONTEND_URL"; fi
 
           npx --yes aws-cdk@2 deploy ItHelpdeskKnowledgeBaseStack --require-approval never $ORIGINS_ARG
           # aurora_allowed_cidr deliberately set to an unassigned
@@ -214,11 +222,22 @@ jobs:
           # CORS_ALLOWED_ORIGINS=http://None. Every optional
           # cross-stack lookup below now explicitly treats a literal
           # "None" the same as empty.
+          #
+          # Also NOT prefixed with an extra "http://" here (the
+          # FrontendUrl output already includes the scheme -- doing so
+          # anyway would have produced "http://http://...", a bug this
+          # never happened to trigger yet since FRONTEND_URL had only
+          # ever been empty or "None" until now) and lowercased (a real
+          # browser's Origin header lowercases the host; the ALB's own
+          # DNS name is mixed-case -- verified live: a same-case value
+          # here produced a 400 "Disallowed CORS origin" for every real
+          # request from the actual deployed frontend).
           FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskFrontendStack \
             --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text 2>/dev/null || echo "")
           if [ "$FRONTEND_URL" = "None" ]; then FRONTEND_URL=""; fi
+          FRONTEND_URL=$(echo "$FRONTEND_URL" | tr '[:upper:]' '[:lower:]')
           CORS_ARG=""
-          if [ -n "$FRONTEND_URL" ]; then CORS_ARG="-c cors_allowed_origins=http://$FRONTEND_URL"; fi
+          if [ -n "$FRONTEND_URL" ]; then CORS_ARG="-c cors_allowed_origins=$FRONTEND_URL"; fi
 
           # Same first-run-empty, self-healing pattern: ItHelpdeskEmailIngestionStack
           # doesn't exist on the very first run either. Empty here means
