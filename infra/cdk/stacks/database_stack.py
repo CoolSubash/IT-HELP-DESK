@@ -139,6 +139,13 @@ class DatabaseStack(Stack):
             "dbname": DB_NAME,
         }
 
+        # Exposed so the CI/CD pipeline (.github/workflows/deploy.yml) can
+        # authorize/revoke a scoped, per-run ingress rule for its own
+        # runner IP around the migration step, instead of this stack
+        # needing to know the runner's IP ahead of time the way the
+        # `aurora_allowed_cidr` context value does for a human running
+        # migrations from a fixed location.
+        CfnOutput(self, "AuroraSecurityGroupId", value=db_security_group.security_group_id)
         CfnOutput(self, "AuroraClusterEndpoint", value=self.cluster.cluster_endpoint.hostname)
         CfnOutput(self, "AuroraClusterPort", value=str(DB_PORT))
         CfnOutput(self, "AuroraDatabaseName", value=DB_NAME)

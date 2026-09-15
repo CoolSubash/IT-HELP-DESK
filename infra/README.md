@@ -1,27 +1,66 @@
 # infra
 
 AWS infrastructure-as-code for **Phase 5A** (inbound email ingestion),
-**Phase 7** (knowledge-base document storage), and **hosting** (VPC, Aurora
-PostgreSQL, ECR, ECS Fargate + ALB -- runs the FastAPI backend somewhere
-AWS can actually reach it, which both Lambda-based flows above need). See
+**Phase 7** (knowledge-base document storage), and **hosting** -- a
+three-tier deployment (public edges / private application tier / private
+data tier) for both the FastAPI backend and the Next.js dashboard. See
 the root README's "Phase 5" section for the email flow's full architecture
 explanation, and `docs/rag-manual`'s AWS deployment chapter for the
-knowledge-base side. This file is just the "how do I run this folder"
-quick reference.
+knowledge-base side. This file is the "how do I run this folder" quick
+reference, both for the automatic pipeline and for running any single
+stack by hand.
+
+## Architecture
+
+```
+Internet
+   |
+   |-- https:// --> [ API Gateway (api_stack.py) ] --VPC Link-->--+
+   |                                                               |
+   `-- http:// --> [ Frontend ALB (frontend_stack.py) ]            |
+                          |                                        |
+                    VPC ("HelpdeskVpc", network_stack.py)          |
+                    +------------------------------------------+   |
+                    | Public subnets: both ALBs above,          |   |
+                    |   Aurora when aurora_publicly_accessible  |   |
+                    |------------------------------------------|   |
+                    | Private subnets (NAT egress only):        |   |
+                    |   Frontend ECS Fargate <--- image tier    |   |
+                    |   Backend ALB (internal) <-----------------+
+                    |        |                                  |
+                    |   Backend ECS Fargate (compute_stack.py)  |
+                    |        |                                  |
+                    |   Aurora PostgreSQL (database_stack.py)   |
+                    +------------------------------------------+
+```
+
+Frontend and backend are each their own ECS Fargate service; only the
+backend sits behind API Gateway rather than its own public ALB (see
+`api_stack.py`'s module docstring for why). Aurora is always inside the
+VPC, reachable from the backend over the VPC's internal network either
+way -- `aurora_publicly_accessible` (default `true`, see
+`database_stack.py`) is purely about whether it's *also* reachable from
+outside the VPC, currently kept on so migrations can run without a
+bastion host; `.github/workflows/deploy.yml`'s `migrate` job opens (and
+immediately revokes) access for its own runner's IP on every run rather
+than leaving a standing hole open.
 
 ```
 infra/
   cdk/                     CDK app -- describes the AWS resources
-    app.py                   instantiates all six stacks below
+    app.py                   instantiates every stack below
     cdk.json
     requirements.txt
     stacks/
+      github_oidc_stack.py     One-time, deployed by hand: lets GitHub Actions deploy everything else
       email_stack.py           Phase 5A: SES -> S3 -> Lambda -> FastAPI
       knowledge_base_stack.py  Phase 7: S3 bucket + IAM user for KB document storage
-      network_stack.py         VPC shared by the database and compute stacks
-      database_stack.py        Aurora PostgreSQL
-      registry_stack.py        ECR repository for the backend image
-      compute_stack.py         ECS Fargate + ALB running the backend
+      network_stack.py         VPC shared by every stack below
+      database_stack.py        Aurora PostgreSQL (private data tier)
+      registry_stack.py        ECR repositories for both container images
+      compute_stack.py         Backend: ECS Fargate + INTERNAL ALB
+      api_stack.py             Public edge for the backend: HTTP API Gateway + VPC Link
+      frontend_stack.py        Frontend: ECS Fargate + PUBLIC ALB
   lambda/email_ingestion/   The actual Lambda code the email stack deploys
     handler.py               entry point
     email_parser.py           .eml -> NormalizedEmail (stdlib only)
@@ -31,14 +70,64 @@ infra/
     tests/
 ```
 
-All six stacks are independent enough to deploy/destroy individually, with
-one real dependency chain: `ItHelpdeskComputeStack` needs
+Real dependency chains (CDK enforces these automatically via
+`add_dependency` in `app.py`): `ItHelpdeskComputeStack` needs
 `ItHelpdeskNetworkStack`, `ItHelpdeskDatabaseStack`, and
-`ItHelpdeskRegistryStack` to already exist (CDK enforces this automatically
-via `add_dependency` in `app.py`). `ItHelpdeskEmailIngestionStack` and
-`ItHelpdeskKnowledgeBaseStack` don't depend on any of the others.
+`ItHelpdeskRegistryStack`; `ItHelpdeskApiStack` needs
+`ItHelpdeskComputeStack` (it wraps that stack's ALB listener);
+`ItHelpdeskFrontendStack` needs `ItHelpdeskNetworkStack` and
+`ItHelpdeskRegistryStack`. `ItHelpdeskEmailIngestionStack`,
+`ItHelpdeskKnowledgeBaseStack`, and `ItHelpdeskGithubOidcStack` don't
+depend on any of the others.
 
-## Cost -- read this before deploying the hosting stacks
+## Automatic deployment (CI/CD) -- push to `main` and it deploys itself
+
+`.github/workflows/deploy.yml` deploys every stack above (except
+`ItHelpdeskGithubOidcStack`) and builds/pushes both container images on
+every push to `main`. **You can watch it happen visually**: open the
+Actions tab on GitHub for this repo, click the running workflow, and it
+renders the job graph below as a live DAG (each box goes
+queued -> running -> green, with the same `needs:` shape this file
+describes) -- no separate tool needed for that.
+
+```
+deploy-foundation --> migrate ------------------\
+        \--> build-backend --------------------- deploy-backend --> build-frontend --> deploy-frontend
+                                                        \--------------------------> deploy-email
+```
+
+**One-time setup, before the first push can deploy anything** (this is
+the only step that isn't itself automated -- see
+`github_oidc_stack.py`'s module docstring for exactly why it can't be):
+
+```bash
+cd infra/cdk
+source .venv/bin/activate
+cdk bootstrap                                    # once per AWS account/region
+cdk deploy ItHelpdeskGithubOidcStack \
+  -c github_org=<your-github-username-or-org> \
+  -c github_repo=<this-repo-name>
+```
+
+Then, in this GitHub repo's Settings -> Secrets and variables -> Actions
+-> **Variables** tab (not Secrets -- none of these are sensitive), add:
+
+| Variable | Value |
+|---|---|
+| `AWS_DEPLOY_ROLE_ARN` | the `DeployRoleArn` output from the command above |
+| `IT_SUPPORT_EMAIL` | your real IT support address (optional -- defaults to `it-support@university.edu`) |
+
+That's it. Push to `main`, and everything else -- bootstrap, all nine
+stacks (minus the OIDC one), both images, migrations -- happens on its
+own from there. The very first run deploys the backend before any
+frontend exists yet, so its CORS origin falls back to
+`app/config.py`'s local-dev default; the *second* push onward picks up
+the real, now-existing frontend URL automatically (see
+`deploy.yml`'s own comments for exactly why).
+
+## Manual / local commands (still useful for testing a single stack)
+
+### Cost -- read this before deploying the hosting stacks
 
 The email and knowledge-base stacks are pennies. The hosting stacks
 (network/database/registry/compute) are not:
@@ -56,7 +145,7 @@ nothing billing behind it (no final Aurora snapshot -- see that file's
 comments). The risk is forgetting to destroy it, not the short-term cost of
 testing it.
 
-## Synthesize (no AWS account needed)
+### Synthesize (no AWS account needed)
 
 ```bash
 cd infra/cdk
@@ -74,12 +163,14 @@ cdk synth ItHelpdeskNetworkStack
 cdk synth ItHelpdeskDatabaseStack
 cdk synth ItHelpdeskRegistryStack
 cdk synth ItHelpdeskComputeStack
+cdk synth ItHelpdeskApiStack
+cdk synth ItHelpdeskFrontendStack
 ```
 This prints the generated CloudFormation template for one stack -- useful to
 sanity-check it without touching any real AWS resources or needing
-credentials. `cdk list` shows all six stack names together.
+credentials. `cdk list` shows every stack name together.
 
-## Deploy (you run this -- needs a real, bootstrapped AWS account)
+### Deploy (you run this -- needs a real, bootstrapped AWS account)
 
 ```bash
 cd infra/cdk
@@ -148,14 +239,36 @@ docker push <RepositoryUri from the stack output>:latest
 cdk deploy ItHelpdeskComputeStack \
   --context knowledge_base_bucket_name=<from the knowledge-base stack's output> \
   --context it_support_email=it-support@your-domain.edu
-# BackendUrl in the stack output is the real, public FastAPI URL --
-# this is the fastapi_base_url value the email ingestion stack needs.
+# The backend's ALB is internal now (see compute_stack.py) -- its
+# InternalBackendUrl output is unreachable from outside the VPC on
+# purpose. Deploy the API stack next to get a real public URL:
+
+cdk deploy ItHelpdeskApiStack
+# ApiGatewayUrl in the stack output is the real, public FastAPI URL --
+# this is the fastapi_base_url value the email ingestion stack needs,
+# and the NEXT_PUBLIC_API_BASE_URL the frontend image below needs.
+```
+
+**Frontend:**
+```bash
+docker build -t <FrontendRepositoryUri from the registry stack's output>:latest \
+  --build-arg NEXT_PUBLIC_API_BASE_URL=<ApiGatewayUrl from above> ../../frontend
+docker push <FrontendRepositoryUri from the registry stack's output>:latest
+
+cdk deploy ItHelpdeskFrontendStack
+# FrontendUrl in the stack output is what a browser actually loads.
+# Once you have it, redeploy the backend so its CORS allowlist includes
+# the dashboard's real origin (defaults to localhost otherwise):
+cdk deploy ItHelpdeskComputeStack \
+  --context knowledge_base_bucket_name=<from the knowledge-base stack's output> \
+  --context it_support_email=it-support@your-domain.edu \
+  --context cors_allowed_origins=http://<FrontendUrl from above>
 ```
 
 Run `cdk deploy` with no stack name to deploy everything at once (CDK will
 ask you to confirm each stack's IAM changes in dependency order).
 
-## Test the Lambda code (no AWS account needed -- S3 is mocked with moto)
+### Test the Lambda code (no AWS account needed -- S3 is mocked with moto)
 
 ```bash
 cd infra/lambda/email_ingestion
@@ -164,12 +277,13 @@ pip install -r requirements-dev.txt
 pytest -v
 ```
 
-## Tear down (to stop the hosting stacks' ongoing cost)
+### Tear down (to stop the hosting stacks' ongoing cost)
 
 ```bash
 cd infra/cdk
 source .venv/bin/activate
-cdk destroy ItHelpdeskComputeStack ItHelpdeskDatabaseStack ItHelpdeskRegistryStack ItHelpdeskNetworkStack
+cdk destroy ItHelpdeskFrontendStack ItHelpdeskApiStack ItHelpdeskComputeStack \
+  ItHelpdeskDatabaseStack ItHelpdeskRegistryStack ItHelpdeskNetworkStack
 ```
 `ItHelpdeskEmailIngestionStack` and `ItHelpdeskKnowledgeBaseStack` cost
 close to nothing left running -- no need to destroy those just to stop the

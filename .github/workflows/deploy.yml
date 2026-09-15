@@ -1,0 +1,310 @@
+# Deploys every infra/cdk stack (except ItHelpdeskGithubOidcStack --
+# that one is the one-time manual bootstrap, see that stack's module
+# docstring) and both container images on every push to `main`.
+#
+# Trusts that backend-ci.yml / frontend-ci.yml already gate what reaches
+# `main` via branch protection (required status checks) -- this
+# workflow does not re-run the test suites itself, only builds/deploys.
+#
+# No long-lived AWS credentials anywhere here: `permissions.id-token`
+# lets each job exchange GitHub's own short-lived OIDC token for
+# temporary AWS credentials via aws-actions/configure-aws-credentials,
+# scoped to the IAM role github_oidc_stack.py created (trust-restricted
+# to this exact repo + the `main` branch).
+#
+# Job graph (also visible as a live graph on each run's Actions page --
+# GitHub renders `needs:` edges as a DAG automatically, no extra tooling
+# needed):
+#
+#   deploy-foundation -> migrate -> deploy-backend -> build-frontend -> deploy-frontend
+#                     \-> build-backend -^        \-> deploy-email
+#
+# `deploy-foundation` covers Network/Registry/Database/KnowledgeBase --
+# independent of each other, and of everything else, so they deploy
+# first as one batch. `deploy-backend` covers Compute + Api together
+# since Api directly depends on Compute's listener. The very first run
+# has no frontend yet, so `deploy-backend`'s CORS origin context comes
+# back empty and the backend falls back to app/config.py's local-dev
+# default -- the *second* push onward picks up the real frontend URL
+# automatically, once ItHelpdeskFrontendStack exists to read it from.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "infra/cdk/**"
+      - "infra/lambda/**"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CDK_DIR: infra/cdk
+
+jobs:
+  deploy-foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install CDK dependencies
+        working-directory: ${{ env.CDK_DIR }}
+        run: pip install -r requirements.txt
+
+      - name: Bootstrap CDK (idempotent -- no-op if already bootstrapped)
+        working-directory: ${{ env.CDK_DIR }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          npx --yes aws-cdk@2 bootstrap aws://$ACCOUNT_ID/${{ env.AWS_REGION }}
+
+      - name: Deploy Network, Registry, Database, Knowledge Base stacks
+        working-directory: ${{ env.CDK_DIR }}
+        run: |
+          npx --yes aws-cdk@2 deploy ItHelpdeskNetworkStack ItHelpdeskRegistryStack --require-approval never
+
+          # Same self-healing pattern as deploy-backend's CORS origin:
+          # empty on the very first run (ItHelpdeskFrontendStack doesn't
+          # exist yet), so knowledge_base_stack.py falls back to its own
+          # localhost default -- the next push after the frontend's
+          # first deploy picks up the real origin automatically, and
+          # browser uploads to the knowledge-base bucket start working.
+          FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskFrontendStack \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text 2>/dev/null || echo "")
+          ORIGINS_ARG=""
+          if [ -n "$FRONTEND_URL" ]; then ORIGINS_ARG="-c dashboard_origins=http://$FRONTEND_URL"; fi
+
+          npx --yes aws-cdk@2 deploy ItHelpdeskKnowledgeBaseStack --require-approval never $ORIGINS_ARG
+          # aurora_allowed_cidr deliberately set to an unassigned
+          # documentation-only range (RFC 5737 TEST-NET-3): the stack's
+          # OWN baked-in ingress rule should never itself grant access
+          # to anyone -- the migrate job below grants (and revokes) a
+          # real, single-IP rule for its own runner on every run
+          # instead. publicly_accessible stays true (this project's
+          # current, explicitly temporary choice -- see
+          # database_stack.py's module docstring and infra/README.md
+          # for how to flip it once migrations no longer need it).
+          npx --yes aws-cdk@2 deploy ItHelpdeskDatabaseStack \
+            --require-approval never \
+            -c aurora_publicly_accessible=true \
+            -c aurora_allowed_cidr=203.0.113.0/32
+
+  migrate:
+    needs: deploy-foundation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Open Aurora to this runner's IP only
+        id: open-db
+        run: |
+          SG_ID=$(aws cloudformation describe-stacks --stack-name ItHelpdeskDatabaseStack \
+            --query "Stacks[0].Outputs[?OutputKey=='AuroraSecurityGroupId'].OutputValue" --output text)
+          RUNNER_IP=$(curl -s https://checkip.amazonaws.com)
+          aws ec2 authorize-security-group-ingress \
+            --group-id "$SG_ID" --protocol tcp --port 5432 --cidr "${RUNNER_IP}/32"
+          echo "sg_id=$SG_ID" >> "$GITHUB_OUTPUT"
+          echo "runner_cidr=${RUNNER_IP}/32" >> "$GITHUB_OUTPUT"
+
+      - name: Run migrations
+        env:
+          SECRET_ARN_QUERY: "Stacks[0].Outputs[?OutputKey=='AuroraSecretArn'].OutputValue"
+          HOST_QUERY: "Stacks[0].Outputs[?OutputKey=='AuroraClusterEndpoint'].OutputValue"
+        run: |
+          SECRET_ARN=$(aws cloudformation describe-stacks --stack-name ItHelpdeskDatabaseStack --query "$SECRET_ARN_QUERY" --output text)
+          DB_HOST=$(aws cloudformation describe-stacks --stack-name ItHelpdeskDatabaseStack --query "$HOST_QUERY" --output text)
+          SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text)
+          DB_USER=$(echo "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['username'])")
+          DB_PASSWORD=$(echo "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['password'])")
+          echo "::add-mask::$DB_PASSWORD"
+          cd backend
+          python3 -m pip install -r requirements.txt
+          DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/helpdesk" \
+            python3 -m migrations.run_migrations
+
+      - name: Revoke this runner's IP (always, even if migration failed)
+        if: always() && steps.open-db.outputs.sg_id != ''
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "${{ steps.open-db.outputs.sg_id }}" --protocol tcp --port 5432 \
+            --cidr "${{ steps.open-db.outputs.runner_cidr }}"
+
+  build-backend:
+    needs: deploy-foundation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and push backend image
+        run: |
+          REPO_URI=$(aws cloudformation describe-stacks --stack-name ItHelpdeskRegistryStack \
+            --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" --output text)
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            docker login --username AWS --password-stdin "${REPO_URI%%/*}"
+          docker build -t "$REPO_URI:${{ github.sha }}" backend/
+          docker push "$REPO_URI:${{ github.sha }}"
+
+  deploy-backend:
+    needs: [migrate, build-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install CDK dependencies
+        working-directory: ${{ env.CDK_DIR }}
+        run: pip install -r requirements.txt
+
+      - name: Deploy Compute (backend) + Api (public URL) stacks
+        working-directory: ${{ env.CDK_DIR }}
+        run: |
+          KB_BUCKET=$(aws cloudformation describe-stacks --stack-name ItHelpdeskKnowledgeBaseStack \
+            --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseBucketName'].OutputValue" --output text)
+          # Empty on the very first run -- ItHelpdeskFrontendStack
+          # doesn't exist yet. Falls back to app/config.py's local-dev
+          # CORS default; the next push after the frontend's first
+          # deploy picks up the real value automatically.
+          FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskFrontendStack \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text 2>/dev/null || echo "")
+          CORS_ARG=""
+          if [ -n "$FRONTEND_URL" ]; then CORS_ARG="-c cors_allowed_origins=http://$FRONTEND_URL"; fi
+
+          # Same first-run-empty, self-healing pattern: ItHelpdeskEmailIngestionStack
+          # doesn't exist on the very first run either. Empty here means
+          # compute_stack.py falls back to EMAIL_WEBHOOK_DEV_MODE=true
+          # (POST /email/inbound accepts unauthenticated requests) --
+          # deploy-email creates the real secret right after this job,
+          # and the *next* push locks it down for real.
+          WEBHOOK_SECRET_ARN=$(aws cloudformation describe-stacks --stack-name ItHelpdeskEmailIngestionStack \
+            --query "Stacks[0].Outputs[?OutputKey=='InboundEmailSecretArn'].OutputValue" --output text 2>/dev/null || echo "")
+          WEBHOOK_ARG=""
+          if [ -n "$WEBHOOK_SECRET_ARN" ]; then WEBHOOK_ARG="-c email_webhook_secret_arn=$WEBHOOK_SECRET_ARN"; fi
+
+          npx --yes aws-cdk@2 deploy ItHelpdeskComputeStack ItHelpdeskApiStack \
+            --require-approval never \
+            -c image_tag=${{ github.sha }} \
+            -c knowledge_base_bucket_name="$KB_BUCKET" \
+            -c it_support_email=${{ vars.IT_SUPPORT_EMAIL || 'it-support@university.edu' }} \
+            $CORS_ARG $WEBHOOK_ARG
+
+  build-frontend:
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and push frontend image
+        run: |
+          API_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskApiStack \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiGatewayUrl'].OutputValue" --output text)
+          REPO_URI=$(aws cloudformation describe-stacks --stack-name ItHelpdeskRegistryStack \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendRepositoryUri'].OutputValue" --output text)
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            docker login --username AWS --password-stdin "${REPO_URI%%/*}"
+          docker build -t "$REPO_URI:${{ github.sha }}" \
+            --build-arg NEXT_PUBLIC_API_BASE_URL="$API_URL" frontend/
+          docker push "$REPO_URI:${{ github.sha }}"
+
+  deploy-frontend:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install CDK dependencies
+        working-directory: ${{ env.CDK_DIR }}
+        run: pip install -r requirements.txt
+
+      - name: Deploy Frontend stack
+        working-directory: ${{ env.CDK_DIR }}
+        run: |
+          npx --yes aws-cdk@2 deploy ItHelpdeskFrontendStack \
+            --require-approval never \
+            -c frontend_image_tag=${{ github.sha }}
+
+  deploy-email:
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install CDK dependencies
+        working-directory: ${{ env.CDK_DIR }}
+        run: pip install -r requirements.txt
+
+      - name: Deploy email ingestion stack
+        working-directory: ${{ env.CDK_DIR }}
+        run: |
+          API_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskApiStack \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiGatewayUrl'].OutputValue" --output text)
+          npx --yes aws-cdk@2 deploy ItHelpdeskEmailIngestionStack \
+            --require-approval never \
+            -c fastapi_base_url="$API_URL" \
+            -c it_support_email=${{ vars.IT_SUPPORT_EMAIL || 'it-support@university.edu' }}
+
+      - name: Activate the SES receipt rule set
+        # CDK/CloudFormation has no resource for "make this rule set the
+        # active one" (email_stack.py's own comment explains why) -- a
+        # deployed-but-inactive rule set silently receives no mail at
+        # all. Safe to run on every deploy: activating an already-active
+        # rule set is a no-op, not an error.
+        run: |
+          RULE_SET_NAME=$(aws cloudformation describe-stacks --stack-name ItHelpdeskEmailIngestionStack \
+            --query "Stacks[0].Outputs[?OutputKey=='ReceiptRuleSetName'].OutputValue" --output text)
+          aws ses set-active-receipt-rule-set --rule-set-name "$RULE_SET_NAME"

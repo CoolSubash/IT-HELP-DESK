@@ -1,9 +1,9 @@
 """
-ECR repository for the FastAPI backend's container image. Its own stack
-(not folded into compute_stack.py) so pushed images survive tearing the
-ECS/ALB stack down for a cost-saving pause -- you don't want to lose
-every image and have to rebuild/repush just because compute was deleted
-overnight.
+ECR repositories for the backend and frontend container images. Its own
+stack (not folded into compute_stack.py/frontend_stack.py) so pushed
+images survive tearing either compute stack down for a cost-saving
+pause -- you don't want to lose every image and have to rebuild/repush
+just because compute was deleted overnight.
 """
 from aws_cdk import CfnOutput, RemovalPolicy, Stack
 from aws_cdk import aws_ecr as ecr
@@ -31,7 +31,20 @@ class RegistryStack(Stack):
             empty_on_delete=True,
         )
 
+        # Same policy as the backend repo -- see frontend_stack.py for
+        # what runs this image (ECS Fargate, behind its own public ALB).
+        self.frontend_repository = ecr.Repository(
+            self,
+            "FrontendRepository",
+            repository_name="it-helpdesk-frontend",
+            image_scan_on_push=True,
+            lifecycle_rules=[ecr.LifecycleRule(max_image_count=10)],
+            removal_policy=RemovalPolicy.DESTROY,
+            empty_on_delete=True,
+        )
+
         CfnOutput(self, "RepositoryUri", value=self.repository.repository_uri)
+        CfnOutput(self, "FrontendRepositoryUri", value=self.frontend_repository.repository_uri)
         CfnOutput(
             self,
             "PushInstructions",
@@ -39,6 +52,9 @@ class RegistryStack(Stack):
                 f"aws ecr get-login-password --region {self.region} | "
                 f"docker login --username AWS --password-stdin {self.account}.dkr.ecr.{self.region}.amazonaws.com "
                 f"&& docker build -t {self.repository.repository_uri}:latest backend/ "
-                f"&& docker push {self.repository.repository_uri}:latest"
+                f"&& docker push {self.repository.repository_uri}:latest "
+                f"&& docker build -t {self.frontend_repository.repository_uri}:latest "
+                f"--build-arg NEXT_PUBLIC_API_BASE_URL=<ApiGatewayUrl from ItHelpdeskApiStack's output> frontend/ "
+                f"&& docker push {self.frontend_repository.repository_uri}:latest"
             ),
         )

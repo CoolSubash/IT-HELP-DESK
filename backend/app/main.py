@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.config import settings
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.rag.storage import StorageNotConfiguredError
 from app.routers import (
@@ -37,9 +38,7 @@ app = FastAPI(title="IT Helpdesk Agent API", version="0.1.0")
 # cross-site -- this API has no sessions at all yet.
 app.add_middleware(
     CORSMiddleware,
-    # 3001 included because `next dev` silently falls back to it whenever
-    # 3000 is already taken by something else on the machine.
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=settings.cors_allowed_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )

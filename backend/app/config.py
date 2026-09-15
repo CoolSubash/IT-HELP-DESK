@@ -12,6 +12,17 @@ class Settings(BaseSettings):
     database_url: str
     environment: str = "development"
 
+    # Comma-separated list of origins the dashboard is served from --
+    # see app/main.py's CORSMiddleware. Defaults cover local `next dev`
+    # (3001 included because it silently falls back there when 3000 is
+    # taken). infra/cdk/stacks/compute_stack.py sets this to the
+    # deployed frontend's ALB DNS name (or custom domain) in production.
+    cors_allowed_origins: str = "http://localhost:3000,http://localhost:3001"
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
     # --- Email (Phase 4) ---
     # "dev" (default) logs emails instead of sending them -- see
     # app/email/dev_provider.py -- so the whole inbound/outbound loop can
