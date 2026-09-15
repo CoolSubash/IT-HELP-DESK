@@ -1,10 +1,20 @@
 """
 Aurora PostgreSQL for the IT Helpdesk backend -- replaces the local
 Docker Postgres (docker-compose.yml) for a real deployment. Aurora
-PostgreSQL 16.4 supports the `vector` extension (same one
+PostgreSQL 16.x supports the `vector` extension (same one
 migrations/0006_knowledge_chunks_and_vector.sql enables locally against
 pgvector/pgvector:pg16), so no schema/migration changes are needed to
 move from local dev to this.
+
+Uses AuroraPostgresEngineVersion.of(...) rather than a named VER_16_x
+constant: aws-cdk-lib 2.162.1's newest named 16.x constant is VER_16_4,
+but AWS has since deprecated plain 16.4 for new cluster creation in
+this account/region (verified live -- a real deploy failed with
+"Cannot find version 16.4 for aurora-postgresql"; `aws rds
+describe-db-engine-versions --engine aurora-postgresql` confirmed the
+oldest still-creatable plain (non-Limitless) 16.x version is 16.8).
+Re-check available versions with that same command before bumping this
+further, since AWS continues retiring old minor versions over time.
 
 Serverless v2, not a fixed provisioned instance: bills per ACU-hour
 (0.5-2 ACUs configured below) and scales within that range automatically
@@ -105,7 +115,9 @@ class DatabaseStack(Stack):
         self.cluster = rds.DatabaseCluster(
             self,
             "AuroraCluster",
-            engine=rds.DatabaseClusterEngine.aurora_postgres(version=rds.AuroraPostgresEngineVersion.VER_16_4),
+            engine=rds.DatabaseClusterEngine.aurora_postgres(
+                version=rds.AuroraPostgresEngineVersion.of("16.14", "16")
+            ),
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=subnet_type),
             security_groups=[db_security_group],
