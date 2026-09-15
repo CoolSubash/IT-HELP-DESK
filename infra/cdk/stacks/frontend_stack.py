@@ -63,11 +63,17 @@ class FrontendStack(Stack):
             ),
         )
 
-        # Next.js's own server responds 200 on "/" once it's up -- no
-        # dedicated health-check route exists in the frontend (unlike
-        # the backend's GET /health), and none is needed for a
-        # stateless page-serving tier like this.
-        service.target_group.configure_health_check(path="/", healthy_http_codes="200")
+        # NOT "/" -- app/page.tsx redirects "/" to "/dashboard" (a 307,
+        # via next/navigation's redirect()), which the ALB health check
+        # doesn't follow -- verified against a real deploy, where every
+        # task was repeatedly marked unhealthy ("ResponseCodeMismatch
+        # ... [307]") and endlessly replaced by ECS, because "/" alone
+        # never actually returns 200. "/dashboard" is a real rendered
+        # page and returns 200 directly -- no dedicated health-check
+        # route exists in the frontend (unlike the backend's GET
+        # /health), and none is needed for a stateless page-serving
+        # tier like this.
+        service.target_group.configure_health_check(path="/dashboard", healthy_http_codes="200")
 
         self.service = service
 
