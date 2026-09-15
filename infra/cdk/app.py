@@ -41,12 +41,20 @@ app = cdk.App()
 # about it at all.
 github_org = app.node.try_get_context("github_org")
 github_repo = app.node.try_get_context("github_repo")
+# Only needed if your repo has GitHub's "immutable subject claim"
+# feature enabled -- see github_oidc_stack.py's module docstring for
+# what this is and how to check. Find yours with:
+#   gh api repos/<owner>/<repo> --jq '.owner.id, .id'
+github_owner_id = app.node.try_get_context("github_owner_id")
+github_repo_id = app.node.try_get_context("github_repo_id")
 if github_org and github_repo:
     GithubOidcStack(
         app,
         "ItHelpdeskGithubOidcStack",
         github_org=github_org,
         github_repo=github_repo,
+        github_owner_id=github_owner_id,
+        github_repo_id=github_repo_id,
         description="One-time: lets GitHub Actions (main branch only) deploy every other stack via OIDC, no long-lived AWS keys",
     )
 

@@ -117,21 +117,22 @@ class DatabaseStack(Stack):
             serverless_v2_max_capacity=2,
             storage_encrypted=True,
             backup=rds.BackupProps(retention=Duration.days(1)),
-            # Both of these matter together for the "deploy, test, tear
-            # down cheaply" workflow described when this was built:
             # removal_policy=DESTROY sets CloudFormation's DeletionPolicy
-            # to Delete instead of the RDS default (Snapshot) -- but RDS
-            # clusters have a SEPARATE "take a final snapshot on delete"
-            # behavior that DeletionPolicy alone doesn't disable, which
-            # is what the explicit property override just below handles.
-            # Without both, `cdk destroy` would still leave a snapshot
-            # behind, quietly billing storage forever until it's found
-            # and deleted by hand.
+            # to Delete instead of RDS's default (Snapshot) -- for
+            # AWS::RDS::DBCluster specifically, DeletionPolicy: Delete
+            # alone is sufficient to skip the final snapshot on
+            # `cdk destroy`; no extra property is needed (or exists --
+            # an earlier version of this file also set a
+            # "SkipFinalSnapshot" property override here, which is a
+            # real AWS::RDS::DBInstance API *parameter* name, not a
+            # AWS::RDS::DBCluster CloudFormation *property* -- verified
+            # against the live resource schema
+            # (`aws cloudformation describe-type --type RESOURCE
+            # --type-name AWS::RDS::DBCluster`) after it made a real
+            # deploy fail with "Unsupported property [SkipFinalSnapshot]").
             removal_policy=RemovalPolicy.DESTROY,
             deletion_protection=False,
         )
-        cfn_cluster = self.cluster.node.default_child
-        cfn_cluster.add_property_override("SkipFinalSnapshot", True)
 
         self.database_url_parts = {
             "host": self.cluster.cluster_endpoint.hostname,
