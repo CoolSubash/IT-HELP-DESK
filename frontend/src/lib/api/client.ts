@@ -8,7 +8,15 @@
  * Next.js server proxy -- see the root README for why, and
  * backend/app/main.py for the CORS configuration that makes this work.
  */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// Trailing slash stripped -- every call site passes `path` starting
+// with "/" (e.g. apiGet("/admins")), and api_stack.py's ApiGatewayUrl
+// output (what NEXT_PUBLIC_API_BASE_URL is built from in production)
+// always ends in "/" itself (HTTP API's default-stage URL format is
+// always `https://<id>.execute-api.<region>.amazonaws.com/`) -- left
+// un-stripped, every real request became a literal double slash
+// (".../admins" -> ".../\/admins"), which API Gateway's routing treats
+// as a different, unmatched path and returns a 404 for.
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/+$/, "");
 
 export class ApiError extends Error {
   status: number;
