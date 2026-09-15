@@ -84,8 +84,12 @@ jobs:
           # localhost default -- the next push after the frontend's
           # first deploy picks up the real origin automatically, and
           # browser uploads to the knowledge-base bucket start working.
+          # See deploy-backend's identical lookup below for why a
+          # literal "None" (not just an empty/missing result) has to be
+          # checked for explicitly here too.
           FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskFrontendStack \
             --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text 2>/dev/null || echo "")
+          if [ "$FRONTEND_URL" = "None" ]; then FRONTEND_URL=""; fi
           ORIGINS_ARG=""
           if [ -n "$FRONTEND_URL" ]; then ORIGINS_ARG="-c dashboard_origins=http://$FRONTEND_URL"; fi
 
@@ -197,8 +201,22 @@ jobs:
           # doesn't exist yet. Falls back to app/config.py's local-dev
           # CORS default; the next push after the frontend's first
           # deploy picks up the real value automatically.
+          #
+          # The `|| echo ""` only covers the describe-stacks CALL
+          # failing outright (stack doesn't exist at all yet). It does
+          # NOT cover the stack existing but not being CREATE_COMPLETE
+          # yet (no Outputs section in its JSON at all in that case) --
+          # verified against a real run where that happened, and `aws
+          # ... --output text` printed the literal string "None"
+          # (str(None) from a null JMESPath result) instead of failing
+          # or printing an empty string. `[ -n "$FRONTEND_URL" ]` then
+          # saw a non-empty string and happily deployed
+          # CORS_ALLOWED_ORIGINS=http://None. Every optional
+          # cross-stack lookup below now explicitly treats a literal
+          # "None" the same as empty.
           FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name ItHelpdeskFrontendStack \
             --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text 2>/dev/null || echo "")
+          if [ "$FRONTEND_URL" = "None" ]; then FRONTEND_URL=""; fi
           CORS_ARG=""
           if [ -n "$FRONTEND_URL" ]; then CORS_ARG="-c cors_allowed_origins=http://$FRONTEND_URL"; fi
 
@@ -210,6 +228,7 @@ jobs:
           # and the *next* push locks it down for real.
           WEBHOOK_SECRET_ARN=$(aws cloudformation describe-stacks --stack-name ItHelpdeskEmailIngestionStack \
             --query "Stacks[0].Outputs[?OutputKey=='InboundEmailSecretArn'].OutputValue" --output text 2>/dev/null || echo "")
+          if [ "$WEBHOOK_SECRET_ARN" = "None" ]; then WEBHOOK_SECRET_ARN=""; fi
           WEBHOOK_ARG=""
           if [ -n "$WEBHOOK_SECRET_ARN" ]; then WEBHOOK_ARG="-c email_webhook_secret_arn=$WEBHOOK_SECRET_ARN"; fi
 
