@@ -191,7 +191,7 @@ class ComputeStack(Stack):
         alb.connections.allow_from(
             ec2.Peer.ipv4(vpc.vpc_cidr_block),
             ec2.Port.tcp(80),
-            "Anything inside this VPC (concretely: api_stack.py's API Gateway VPC Link) -- see open_listener's comment above for why this isn't a security-group reference",
+            "Anything inside this VPC (concretely: api_stack.py API Gateway VPC Link) -- see open_listener comment above for why this is not a security-group reference",
         )
 
         # No security-group rule added here connecting to Aurora --

@@ -71,7 +71,7 @@ class DatabaseStack(Stack):
         db_security_group.add_ingress_rule(
             ec2.Peer.ipv4(vpc.vpc_cidr_block),
             ec2.Port.tcp(DB_PORT),
-            "Any resource inside this VPC (the ECS-hosted backend) -- see this comment for why this isn't a direct security-group reference",
+            "Any resource inside this VPC (the ECS-hosted backend) -- see this comment for why this is not a direct security-group reference",
         )
 
         if publicly_accessible:
@@ -89,7 +89,7 @@ class DatabaseStack(Stack):
                 ec2.Peer.ipv4(cidr),
                 ec2.Port.tcp(DB_PORT),
                 f"TEMPORARY direct access for running migrations from {cidr} -- "
-                f"see database_stack.py's module docstring; revert once migrations are done",
+                f"see database_stack.py module docstring; revert once migrations are done",
             )
 
         subnet_type = ec2.SubnetType.PUBLIC if publicly_accessible else ec2.SubnetType.PRIVATE_WITH_EGRESS
